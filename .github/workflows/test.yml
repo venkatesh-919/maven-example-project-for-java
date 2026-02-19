@@ -88,9 +88,9 @@ jobs:
       run: |
         # Check if process is still running
         if ps -p $APP_PID > /dev/null; then
-          echo "✅ Application process is running with PID: $APP_PID"
+          echo "✅ Application process is running with PID: $APP_PID "
         else
-          echo "❌ Application process failed to start or crashed"
+          echo "❌ Application process failed to start or crashed "
           exit 1
         fi
         
@@ -152,7 +152,6 @@ jobs:
           fi
           echo "✅ Application stopped"
         fi
-
   # # Optional: Deploy to actual server/cloud
   # deploy-to-server:
   #   needs: build
@@ -200,4 +199,4 @@ jobs:
   #       else
   #         echo "❌ Application deployment verification failed"
   #         exit 1
-        fi--
+        # fi--
