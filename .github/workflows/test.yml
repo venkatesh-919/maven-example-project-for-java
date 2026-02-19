@@ -13,7 +13,7 @@ jobs:
     
     strategy:
       matrix:
-        java: [ '11', '17' ]  # Test on multiple Java versions
+        java: [ '11', '17' ]
       fail-fast: false
 
     steps:
@@ -32,72 +32,99 @@ jobs:
     - name: Run tests
       run: mvn -B test --file pom.xml
     
-    - name: Upload test results
-      if: always()  # Runs even if tests fail
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results-java-${{ matrix.java }}
-        path: target/surefire-reports/
+    - name: Prepare executable JAR
+      run: |
+        # Find the executable JAR (for Spring Boot, it's typically not the original)
+        if ls target/*.jar 1> /dev/null 2>&1; then
+          # For Spring Boot, exclude the original JAR if it exists
+          if ls target/*.jar | grep -v "original" > /dev/null; then
+            JAR_FILE=$(ls target/*.jar | grep -v "original" | head -1)
+          else
+            JAR_FILE=$(ls target/*.jar | head -1)
+          fi
+          
+          echo "Selected JAR: $JAR_FILE"
+          cp "$JAR_FILE" ./app.jar
+          
+          # Verify the JAR has a main manifest
+          MAIN_CLASS=$(unzip -p ./app.jar META-INF/MANIFEST.MF 2>/dev/null | grep "Main-Class:" || echo "")
+          if [ -z "$MAIN_CLASS" ]; then
+            echo "⚠️ Warning: No Main-Class found in manifest. The JAR may not be executable."
+          else
+            echo "✅ Found Main-Class: $MAIN_CLASS"
+          fi
+        else
+          echo "❌ No JAR files found in target directory"
+          exit 1
+        fi
     
     - name: Upload JAR artifact
       uses: actions/upload-artifact@v4
       with:
-        name: maven-example-jar-java-${{ matrix.java }}
-        path: target/*.jar
+        name: app-jar-java-${{ matrix.java }}
+        path: ./app.jar
 
- 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    steps:
     - name: Download JAR artifact
       uses: actions/download-artifact@v4
       with:
-        name: maven-example-jar-java-${{ matrix.java }}  # Note: This needs a specific Java version
-        path: ./app
+        name: app-jar-java-17  # Using Java 17 for deployment
+        path: ./
     
-    # Alternative: Download all artifacts and find the JAR
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: ./artifacts
-    
-    - name: Find and prepare JAR file
+    - name: Verify JAR is executable
       run: |
-        # Find the JAR file (assuming it's the only one or you have a naming convention)
-        JAR_FILE=$(find ./artifacts -name "*.jar" | head -n 1)
-        if [ -z "$JAR_FILE" ]; then
-          echo "No JAR file found!"
+        if [ ! -f app.jar ]; then
+          echo "❌ app.jar not found!"
+          ls -la
           exit 1
         fi
-        echo "Found JAR: $JAR_FILE"
-        cp "$JAR_FILE" ./app.jar
+        
+        # Check manifest
+        MAIN_CLASS=$(unzip -p app.jar META-INF/MANIFEST.MF 2>/dev/null | grep "Main-Class:" || echo "")
+        if [ -z "$MAIN_CLASS" ]; then
+          echo "❌ No Main-Class found in manifest. JAR is not executable."
+          exit 1
+        else
+          echo "✅ Found Main-Class: $MAIN_CLASS"
+        fi
     
     - name: Run JAR file
       run: |
-        # Start the application in background
-        java -jar app.jar &
+        # Start the application in background with output redirected to a log file
+        java -jar app.jar > app.log 2>&1 &
         APP_PID=$!
         echo "APP_PID=$APP_PID" >> $GITHUB_ENV
+        
+        echo "Started application with PID: $APP_PID"
         
         # Give the app time to start
         sleep 15
     
-    - name: Verify application is running
+    - name: Check if application is running
       run: |
-        # Check if process is still running
         if ps -p $APP_PID > /dev/null; then
-          echo "✅ Application process is running with PID: $APP_PID "
+          echo "✅ Application process is running with PID: $APP_PID"
+          
+          # Show last few lines of log
+          echo "=== Last 20 lines of application log ==="
+          tail -20 app.log
         else
-          echo "❌ Application process failed to start or crashed "
+          echo "❌ Application process failed to start or crashed"
+          echo "=== Application log ==="
+          cat app.log
           exit 1
         fi
-        
-        # Check if application is responding (adjust URL and port as needed)
-        # Common endpoints to check:
-        # - Spring Boot: http://localhost:8080/actuator/health
-        # - Default: http://localhost:8080
-        # - Custom: http://localhost:YOUR_PORT/YOUR_ENDPOINT
-        
+    
+    - name: Verify application health
+      run: |
         MAX_RETRIES=10
         RETRY_COUNT=0
-        APP_URL="http://localhost:8080"  # Change this to your app's URL
+        APP_URL="http://localhost:8080"
         
         while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
           if curl -f -s -o /dev/null "$APP_URL"; then
@@ -107,6 +134,8 @@ jobs:
             RETRY_COUNT=$((RETRY_COUNT + 1))
             if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
               echo "❌ Application failed to respond after $MAX_RETRIES attempts"
+              echo "=== Application log ==="
+              cat app.log
               exit 1
             fi
             echo "Waiting for application to respond... (attempt $RETRY_COUNT/$MAX_RETRIES)"
@@ -114,84 +143,17 @@ jobs:
           fi
         done
     
-    - name: Check application health (Spring Boot specific)
-      run: |
-        # If using Spring Boot with Actuator
-        HEALTH_URL="http://localhost:8080/actuator/health"
-        if curl -f -s "$HEALTH_URL" | grep -q '"status":"UP"'; then
-          echo "✅ Application health check passed"
-        else
-          echo "⚠️ Health check endpoint not available or returned non-UP status"
-          # Don't fail the build for this, just informational
-        fi
-    
-    - name: Application logs (if available)
-      if: always()  # Show logs even if verification fails
-      run: |
-        echo "=== Application Logs ==="
-        # If your app writes logs to a file, display them here
-        # tail -n 50 ./app/logs/application.log
-        
     - name: Stop application
-      if: always()  # Always try to stop the app
+      if: always()
       run: |
         if [ ! -z "$APP_PID" ] && ps -p $APP_PID > /dev/null; then
           echo "Stopping application with PID: $APP_PID"
           kill $APP_PID
-          # Give it time to shut down gracefully
           sleep 5
-          # Force kill if still running
           if ps -p $APP_PID > /dev/null; then
             echo "Force killing application"
             kill -9 $APP_PID
           fi
           echo "✅ Application stopped"
         fi
-  # # Optional: Deploy to actual server/cloud
-  # deploy-to-server:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-  #   environment: production  # Optional: Define environment
-    
-  #   steps:
-  #   - name: Download JAR artifact
-  #     uses: actions/download-artifact@v4
-  #     with:
-  #       name: maven-example-jar-java-17  # Deploy Java 17 version
-  #       path: ./
-    
-  #   - name: Deploy to server (example with SCP)
-  #     env:
-  #       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-  #       REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
-  #       REMOTE_USER: ${{ secrets.REMOTE_USER }}
-  #       REMOTE_PATH: ${{ secrets.REMOTE_PATH }}
-  #     run: |
-  #       # Setup SSH
-  #       mkdir -p ~/.ssh
-  #       echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-  #       chmod 600 ~/.ssh/id_rsa
-  #       ssh-keyscan -H $REMOTE_HOST >> ~/.ssh/known_hosts
         
-  #       # Copy JAR file
-  #       scp target/*.jar $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH/
-        
-  #       # Restart application on remote server
-  #       ssh $REMOTE_USER@$REMOTE_HOST "cd $REMOTE_PATH && ./restart-app.sh"
-        
-  #   - name: Verify remote deployment
-  #     env:
-  #       REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
-  #       APP_URL: "http://your-app-url.com/health"  # Change to your app URL
-  #     run: |
-  #       # Wait for app to start
-  #       sleep 30
-        
-  #       # Check if app is responding
-  #       if curl -f -s -o /dev/null "$APP_URL"; then
-  #         echo "✅ Application deployed successfully and is responding"
-  #       else
-  #         echo "❌ Application deployment verification failed"
-  #         exit 1
-        # fi--
