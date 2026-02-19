@@ -34,9 +34,7 @@ jobs:
     
     - name: Prepare executable JAR
       run: |
-        # Find the executable JAR (for Spring Boot, it's typically not the original)
         if ls target/*.jar 1> /dev/null 2>&1; then
-          # For Spring Boot, exclude the original JAR if it exists
           if ls target/*.jar | grep -v "original" > /dev/null; then
             JAR_FILE=$(ls target/*.jar | grep -v "original" | head -1)
           else
@@ -46,7 +44,6 @@ jobs:
           echo "Selected JAR: $JAR_FILE"
           cp "$JAR_FILE" ./app.jar
           
-          # Verify the JAR has a main manifest
           MAIN_CLASS=$(unzip -p ./app.jar META-INF/MANIFEST.MF 2>/dev/null | grep "Main-Class:" || echo "")
           if [ -z "$MAIN_CLASS" ]; then
             echo "⚠️ Warning: No Main-Class found in manifest. The JAR may not be executable."
@@ -84,7 +81,6 @@ jobs:
           exit 1
         fi
         
-        # Check manifest
         MAIN_CLASS=$(unzip -p app.jar META-INF/MANIFEST.MF 2>/dev/null | grep "Main-Class:" || echo "")
         if [ -z "$MAIN_CLASS" ]; then
           echo "❌ No Main-Class found in manifest. JAR is not executable."
@@ -93,67 +89,41 @@ jobs:
           echo "✅ Found Main-Class: $MAIN_CLASS"
         fi
     
-    - name: Run JAR file
+    - name: Run JAR file and capture output
       run: |
-        # Start the application in background with output redirected to a log file
-        java -jar app.jar > app.log 2>&1 &
-        APP_PID=$!
-        echo "APP_PID=$APP_PID" >> $GITHUB_ENV
+        echo "=== Running JAR file ==="
+        # Run the JAR and capture both stdout and stderr
+        java -jar app.jar > app.log 2>&1
+        EXIT_CODE=$?
         
-        echo "Started application with PID: $APP_PID"
+        # Display the output
+        echo "=== Application Output ==="
+        cat app.log
         
-        # Give the app time to start
-        sleep 15
-    
-    - name: Check if application is running
-      run: |
-        if ps -p $APP_PID > /dev/null; then
-          echo "✅ Application process is running with PID: $APP_PID"
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "✅ Application executed successfully with exit code: $EXIT_CODE"
           
-          # Show last few lines of log
-          echo "=== Last 20 lines of application log ==="
-          tail -20 app.log
+          # Verify expected output
+          if grep -q "Hello World!!!" app.log; then
+            echo "✅ Found expected output: 'Hello World!!!'"
+          else
+            echo "⚠️ Expected output 'Hello World!!!' not found in application log"
+          fi
+          
+          if grep -q "Main-Class: org.pirola.maven.example.MavenExample" app.log; then
+            echo "✅ Found Main-Class in manifest output"
+          else
+            echo "⚠️ Main-Class information not found in application log"
+          fi
         else
-          echo "❌ Application process failed to start or crashed"
-          echo "=== Application log ==="
-          cat app.log
+          echo "❌ Application failed with exit code: $EXIT_CODE"
           exit 1
         fi
     
-    - name: Verify application health
+    # Optional: If you want to run the JAR in a different way or with arguments
+    - name: Run JAR with arguments (example)
       run: |
-        MAX_RETRIES=10
-        RETRY_COUNT=0
-        APP_URL="http://localhost:8080"
-        
-        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-          if curl -f -s -o /dev/null "$APP_URL"; then
-            echo "✅ Application is responding at $APP_URL"
-            break
-          else
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-              echo "❌ Application failed to respond after $MAX_RETRIES attempts"
-              echo "=== Application log ==="
-              cat app.log
-              exit 1
-            fi
-            echo "Waiting for application to respond... (attempt $RETRY_COUNT/$MAX_RETRIES)"
-            sleep 5
-          fi
-        done
-    
-    - name: Stop application
-      if: always()
-      run: |
-        if [ ! -z "$APP_PID" ] && ps -p $APP_PID > /dev/null; then
-          echo "Stopping application with PID: $APP_PID"
-          kill $APP_PID
-          sleep 5
-          if ps -p $APP_PID > /dev/null; then
-            echo "Force killing application"
-            kill -9 $APP_PID
-          fi
-          echo "✅ Application stopped"
-        fi
-        
+        echo "=== Running JAR with arguments ==="
+        java -jar app.jar --some-argument > app-with-args.log 2>&1
+        echo "=== Output with arguments ==="
+        cat app-with-args.log
