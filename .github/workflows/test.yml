@@ -45,12 +45,7 @@ jobs:
         name: maven-example-jar-java-${{ matrix.java }}
         path: target/*.jar
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'  # Only deploy from main/master
-    
-    steps:
+ 
     - name: Download JAR artifact
       uses: actions/download-artifact@v4
       with:
